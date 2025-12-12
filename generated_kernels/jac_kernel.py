@@ -1,6 +1,6 @@
 import warp as wp
 
-FloatT = wp.float64
+FloatT = wp.float32
 
 @wp.func
 def sq(x: FloatT):
@@ -15,7 +15,7 @@ def c_fmod(x: FloatT, y: FloatT):
     return x - wp.trunc(x / y) * y
 
 @wp.kernel
-def jac_kernel(inputs_0: wp.array(dtype=wp.float64, ndim=2), outputs_0: wp.array(dtype=wp.float64, ndim=2)):
+def jac_kernel(inputs_0: wp.array(dtype=wp.float32, ndim=2), outputs_0: wp.array(dtype=wp.float32, ndim=2)):
     tid = wp.tid()
     a000=FloatT(9.)
     outputs_0[tid, 0]=a000

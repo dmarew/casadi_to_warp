@@ -9,7 +9,7 @@ from casadi_to_warp import CasadiToWarp
 
 # --- CONFIGURATION ---
 BATCH_SIZE = 4096
-USE_FLOAT64 = True
+USE_FLOAT64 = False
 
 # Global types for Warp
 FloatT = wp.float64 if USE_FLOAT64 else wp.float32
