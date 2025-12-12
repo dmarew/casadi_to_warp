@@ -8,7 +8,7 @@ import sys
 from casadi_to_warp import CasadiToWarp
 
 # --- CONFIGURATION ---
-BATCH_SIZE = 4096 * 4
+BATCH_SIZE = 4096
 USE_FLOAT64 = True
 
 # Global types for Warp
@@ -18,6 +18,7 @@ np_dtype = np.float64 if USE_FLOAT64 else np.float32
 def main():
     wp.init()
     np.random.seed(42)
+    np.set_printoptions(precision=3)
     
     print(f"--- Configuration ---\nBatch Size: {BATCH_SIZE}\nPrecision:  {'Float64' if USE_FLOAT64 else 'Float32'}")
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -32,8 +33,12 @@ def main():
 
     print("Generating Symbolic Jacobian in CasADi...")
     
+
+
     x_sym = fk_func.sx_in(0)
     out_sym = fk_func(x_sym)
+
+
     jac_sym = ca.jacobian(out_sym, x_sym)
     
     jac_flat = ca.densify(jac_sym) # Make sure it's dense
@@ -68,9 +73,9 @@ def main():
             [-np.pi, np.pi],
             [-np.pi, np.pi],
             [0, 2.66],
-            [-1.3, 0.3],
+            [-1.3, 0.5],
             [-0.3, 0.3],
-            [-0.9, 0.3],
+            [ -1.1345, 0.1745],
         ]
     )
     
@@ -141,7 +146,15 @@ def main():
     jac_casadi_np = np.array(res_jac_casadi).T
     if not USE_FLOAT64: jac_casadi_np = jac_casadi_np.astype(np.float32)
     
-    diff_jac = np.max(np.abs(jac_warp_np - jac_casadi_np))
+    diff_array = np.abs(jac_warp_np - jac_casadi_np)
+    diff_jac = np.max(diff_array)
+    max_diff_idx = np.unravel_index(np.argmax(diff_array), diff_array.shape)
+    print(f"Index of Max Diff Jac: {max_diff_idx}")
+    print(f"input at max {x_np[max_diff_idx[0]]}")
+    print(f"jac at max:\n{jac_warp_np[max_diff_idx[0]].reshape(6,6)}")
+    print(f"jac at max:\n{jac_casadi_np[max_diff_idx[0]].reshape(6,6)}")
+    
+
     
     print(f"Max Diff FK:  {diff_fk:.8f}")
     print(f"Max Diff Jac: {diff_jac:.8f}")
