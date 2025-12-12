@@ -35,17 +35,55 @@ def main():
     
 
 
-    x_sym = fk_func.sx_in(0)
-    out_sym = fk_func(x_sym)
+    # joint_pos_sym = fk_func.sx_in(0)
+    
+    nq = 13
+    nv = 12
+    nu = 6
+    
+    q_sym = ca.SX.sym("q", nq)
+    v_sym = ca.SX.sym("v", nv)
+    I_rotor_sym = ca.SX.sym("I", nu, 1)
+
+    joint_pos_sym = q_sym[7:]
+    joint_vel_sym = v_sym[6:]
+    
+    motor_pos_sym = fk_func(joint_pos_sym)
 
 
-    jac_sym = ca.jacobian(out_sym, x_sym)
+
+    jac_sym = ca.jacobian(motor_pos_sym, joint_pos_sym)
     
     jac_flat = ca.densify(jac_sym) # Make sure it's dense
     jac_flat = ca.reshape(jac_flat, -1, 1) 
     
-    jac_func = ca.Function('jac_func', [x_sym], [jac_flat])
+    jac_func = ca.Function('jac_func', [joint_pos_sym], [jac_flat])
     print("Jacobian Function Created.")
+
+
+
+    armature_sym = jac_sym.T @ ca.diag(I_rotor_sym) @ jac_sym.T
+    
+    armature_sym_ext = ca.SX.zeros(nv, nv)
+    #[0|0]
+    #-----
+    #[0|armature]
+    armature_sym_ext[6:, 6:] = armature_sym
+
+
+    armature_flat = ca.densify(armature_sym_ext)
+    armature_flat = ca.reshape(armature_flat, -1, 1)
+
+    armature_func = ca.Function('armature_func', [joint_pos_sym, I_rotor_sym], [armature_flat]).expand()
+
+
+    motor_vel_sym = jac_sym @ joint_vel_sym
+
+
+    state_armature_jac_func = ca.Function("state_armature_jac_func", [q_sym, v_sym, I_rotor_sym], [motor_pos_sym, motor_vel_sym, jac_flat, armature_flat]).expand()
+
+
+
 
     # 3. Transpile Both Functions
     print("\n--- Transpiling ---")
@@ -59,6 +97,15 @@ def main():
     jac_transpiler = CasadiToWarp(jac_func, function_name="jac_kernel", use_float64=USE_FLOAT64, output_dir=output_dir)
     jac_kernel = jac_transpiler.load_kernel()
     print("Jacobian Kernel Ready.")
+
+    armature_transpiler = CasadiToWarp(armature_func, function_name="armature_kernel", use_float64=USE_FLOAT64, output_dir=output_dir)
+    armature_kernel = armature_transpiler.load_kernel()
+
+    state_armature_jac_transpiler = CasadiToWarp(state_armature_jac_func, function_name="state_armature_jac_kernel", use_float64=USE_FLOAT64, output_dir=output_dir)
+
+    state_armature_jac_kernel = state_armature_jac_transpiler.load_kernel()
+
+    print("armature Kernel Ready.")
 
     in_dim = fk_func.size1_in(0)
     out_dim_fk = fk_func.size1_out(0)
@@ -154,8 +201,6 @@ def main():
     print(f"jac at max:\n{jac_warp_np[max_diff_idx[0]].reshape(6,6)}")
     print(f"jac at max:\n{jac_casadi_np[max_diff_idx[0]].reshape(6,6)}")
     
-
-    
     print(f"Max Diff FK:  {diff_fk:.8f}")
     print(f"Max Diff Jac: {diff_jac:.8f}")
     
@@ -163,6 +208,70 @@ def main():
         print("SUCCESS: Both kernels match CasADi baseline.")
     else:
         print("MISMATCH DETECTED.")
+
+    print("\n--- Validating State Armature Jacobian Kernel ---")
+    
+    # Generate inputs for state_armature_jac_kernel
+    # q: (BATCH_SIZE, 13)
+    # v: (BATCH_SIZE, 12)
+    # I_rotor: (BATCH_SIZE, 6)
+    
+    q_np = np.zeros((BATCH_SIZE, 13), dtype=np_dtype)
+    # Randomize joints (last 6)
+    q_np[:, 7:] = np.random.uniform(joint_limits[:, 0], joint_limits[:, 1], (BATCH_SIZE, 6)).astype(np_dtype)
+    # Randomize base (first 7) - just for completeness, though kernel might not use them all
+    q_np[:, :3] = np.random.randn(BATCH_SIZE, 3).astype(np_dtype) # pos
+    q_np[:, 3:7] = np.random.randn(BATCH_SIZE, 4).astype(np_dtype) # quat (unnormalized is fine for test if not used for rotation logic that assumes unit)
+    # Normalize quat just in case
+    q_norm = np.linalg.norm(q_np[:, 3:7], axis=1, keepdims=True)
+    q_np[:, 3:7] /= q_norm
+
+    v_np = np.random.randn(BATCH_SIZE, nv).astype(np_dtype)
+    I_rotor_np = np.random.uniform(1e-6, 1e-4, (BATCH_SIZE, 6)).astype(np_dtype)
+    
+    q_wp = wp.from_numpy(q_np, dtype=FloatT)
+    v_wp = wp.from_numpy(v_np, dtype=FloatT)
+    I_rotor_wp = wp.from_numpy(I_rotor_np, dtype=FloatT)
+    
+    # Outputs
+    out_motor_pos_wp = wp.zeros((BATCH_SIZE, nu), dtype=FloatT)
+    out_motor_vel_wp = wp.zeros((BATCH_SIZE, nu), dtype=FloatT)
+    out_jac_dense_wp = wp.zeros((BATCH_SIZE, nu*nu), dtype=FloatT)
+    out_armature_wp = wp.zeros((BATCH_SIZE, nv*nv), dtype=FloatT) # 12x12 flattened
+    
+    # Launch Warp Kernel
+    wp.launch(
+        kernel=state_armature_jac_kernel,
+        dim=BATCH_SIZE,
+        inputs=[q_wp, v_wp, I_rotor_wp],
+        outputs=[out_motor_pos_wp, out_motor_vel_wp, out_jac_dense_wp, out_armature_wp]
+    )
+    wp.synchronize()
+    
+    # Run CasADi Baseline
+    state_armature_jac_map = state_armature_jac_func.map(BATCH_SIZE)
+    res_casadi = state_armature_jac_map(q_np.T, v_np.T, I_rotor_np.T)
+    
+    motor_pos_casadi = np.array(res_casadi[0]).T
+    motor_vel_casadi = np.array(res_casadi[1]).T
+    jac_dense_casadi = np.array(res_casadi[2]).T
+    armature_casadi = np.array(res_casadi[3]).T
+    
+    # Compare
+    diff_motor_pos = np.max(np.abs(out_motor_pos_wp.numpy() - motor_pos_casadi))
+    diff_motor_vel = np.max(np.abs(out_motor_vel_wp.numpy() - motor_vel_casadi))
+    diff_jac_dense = np.max(np.abs(out_jac_dense_wp.numpy() - jac_dense_casadi))
+    diff_armature = np.max(np.abs(out_armature_wp.numpy() - armature_casadi))
+    
+    print(f"Max Diff Motor Pos: {diff_motor_pos:.8f}")
+    print(f"Max Diff Motor Vel: {diff_motor_vel:.8f}")
+    print(f"Max Diff Jac Dense: {diff_jac_dense:.8f}")
+    print(f"Max Diff Armature:  {diff_armature:.8f}")
+    
+    if max(diff_motor_pos, diff_motor_vel, diff_jac_dense, diff_armature) < 1e-3:
+        print("SUCCESS: State Armature Jacobian Kernel matches CasADi baseline.")
+    else:
+        print("MISMATCH DETECTED in State Armature Jacobian Kernel.")
 
 if __name__ == "__main__":
     main()
