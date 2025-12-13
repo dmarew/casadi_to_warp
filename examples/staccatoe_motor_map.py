@@ -22,7 +22,7 @@ def main():
     
     print(f"--- Configuration ---\nBatch Size: {BATCH_SIZE}\nPrecision:  {'Float64' if USE_FLOAT64 else 'Float32'}")
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    fk_path = os.path.join(script_dir, "../casadi_functions/staccatoe_fk_func.casadi")
+    fk_path = os.path.join(script_dir, "../casadi_functions/staccatoe_fk.casadi")
     
     try:        
         fk_func = ca.Function.load(fk_path)
@@ -90,18 +90,18 @@ def main():
     
     output_dir = "generated_kernels"
     
-    fk_transpiler = CasadiToWarp(fk_func, function_name="fk_kernel", use_float64=USE_FLOAT64, output_dir=output_dir)
+    fk_transpiler = CasadiToWarp(fk_func, function_name="fk_kernel", output_dir=output_dir)
     fk_kernel = fk_transpiler.load_kernel()
     print("FK Kernel Ready.")
     
-    jac_transpiler = CasadiToWarp(jac_func, function_name="jac_kernel", use_float64=USE_FLOAT64, output_dir=output_dir)
+    jac_transpiler = CasadiToWarp(jac_func, function_name="jac_kernel", output_dir=output_dir)
     jac_kernel = jac_transpiler.load_kernel()
     print("Jacobian Kernel Ready.")
 
-    armature_transpiler = CasadiToWarp(armature_func, function_name="armature_kernel", use_float64=USE_FLOAT64, output_dir=output_dir)
+    armature_transpiler = CasadiToWarp(armature_func, function_name="armature_kernel", output_dir=output_dir)
     armature_kernel = armature_transpiler.load_kernel()
 
-    state_armature_jac_transpiler = CasadiToWarp(state_armature_jac_func, function_name="state_armature_jac_kernel", use_float64=USE_FLOAT64, output_dir=output_dir)
+    state_armature_jac_transpiler = CasadiToWarp(state_armature_jac_func, function_name="state_armature_jac_kernel", output_dir=output_dir)
 
     state_armature_jac_kernel = state_armature_jac_transpiler.load_kernel()
 
@@ -198,8 +198,8 @@ def main():
     max_diff_idx = np.unravel_index(np.argmax(diff_array), diff_array.shape)
     print(f"Index of Max Diff Jac: {max_diff_idx}")
     print(f"input at max {x_np[max_diff_idx[0]]}")
-    print(f"jac at max:\n{jac_warp_np[max_diff_idx[0]].reshape(6,6)}")
-    print(f"jac at max:\n{jac_casadi_np[max_diff_idx[0]].reshape(6,6)}")
+    print(f"jac at warp max:\n{jac_warp_np[max_diff_idx[0]].reshape(6,6)}")
+    print(f"jac at casadi max:\n{jac_casadi_np[max_diff_idx[0]].reshape(6,6)}")
     
     print(f"Max Diff FK:  {diff_fk:.8f}")
     print(f"Max Diff Jac: {diff_jac:.8f}")
