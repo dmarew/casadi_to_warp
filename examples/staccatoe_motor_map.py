@@ -54,7 +54,7 @@ def main():
 
     jac_sym = ca.jacobian(motor_pos_sym, joint_pos_sym)
     
-    jac_flat = ca.densify(jac_sym) # Make sure it's dense
+    jac_flat = ca.densify(jac_sym).T # Make sure it's dense
     jac_flat = ca.reshape(jac_flat, -1, 1) 
     
     jac_func = ca.Function('jac_func', [joint_pos_sym], [jac_flat])
@@ -62,7 +62,7 @@ def main():
 
 
 
-    armature_sym = jac_sym.T @ ca.diag(I_rotor_sym) @ jac_sym.T
+    armature_sym = jac_sym.T @ ca.diag(I_rotor_sym) @ jac_sym
     
     armature_sym_ext = ca.SX.zeros(nv, nv)
     #[0|0]
@@ -71,7 +71,7 @@ def main():
     armature_sym_ext[6:, 6:] = armature_sym
 
 
-    armature_flat = ca.densify(armature_sym_ext)
+    armature_flat = ca.densify(armature_sym_ext).T
     armature_flat = ca.reshape(armature_flat, -1, 1)
 
     armature_func = ca.Function('armature_func', [joint_pos_sym, I_rotor_sym], [armature_flat]).expand()
