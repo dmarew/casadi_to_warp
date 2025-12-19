@@ -51,7 +51,16 @@ def main():
     print(
         f"Generating Symbolic Jacobian in CasADi for {'FIXED' if FIXED_BASE else 'FLOATING'} BASE..."
     )
-
+    joint_limits = np.array(
+        [
+            [-np.pi, np.pi],
+            [-np.pi, np.pi],
+            [0, 2.66],
+            [-1.3, 0.5],
+            [-0.3, 0.3],
+            [-1.1345, 0.1745],
+        ]
+    )
     # joint_pos_sym = fk_func.sx_in(0)
 
     if FIXED_BASE:
@@ -63,19 +72,24 @@ def main():
         v_sym = ca.SX.sym("v", nv)
         I_rotor_sym = ca.SX.sym("I", nu, 1)
 
-        joint_pos_sym = q_sym
-        joint_vel_sym = v_sym
+        lbq = joint_limits[:, 0]
+        ubq = joint_limits[:, 1]
 
-        motor_pos_sym = fk_func(joint_pos_sym)
+        # 1. Define the clamped expression for position evaluation
+        q_clamped = ca.fmax(lbq, ca.fmin(ubq, q_sym))
+        motor_pos_sym = fk_func(q_clamped)
 
-        jac_sym = ca.jacobian(motor_pos_sym, joint_pos_sym)
+        # 2. Fix: Compute Jacobian w.r.t raw symbols, then substitute clamped values
+        jac_raw = ca.jacobian(fk_func(q_sym), q_sym)
+        jac_sym = ca.substitute(jac_raw, q_sym, q_clamped)
 
         jac_flat = ca.densify(jac_sym).T  # Make sure it's dense
         jac_flat = ca.reshape(jac_flat, -1, 1)
 
-        jac_func = ca.Function("jac_func", [joint_pos_sym], [jac_flat])
+        jac_func = ca.Function("jac_func", [q_sym], [jac_flat])
         print("Jacobian Function Created.")
 
+        # Armature calculation (Reflected Inertia)
         armature_sym = jac_sym.T @ ca.diag(I_rotor_sym) @ jac_sym
 
         # For fixed base, we don't need to pad
@@ -85,10 +99,10 @@ def main():
         armature_flat = ca.reshape(armature_flat, -1, 1)
 
         armature_func = ca.Function(
-            "armature_func", [joint_pos_sym, I_rotor_sym], [armature_flat]
+            "armature_func", [q_sym, I_rotor_sym], [armature_flat]
         ).expand()
 
-        motor_vel_sym = jac_sym @ joint_vel_sym
+        motor_vel_sym = jac_sym @ v_sym
 
         kernel_name = "state_armature_jac_fixed_kernel"
         state_armature_jac_func = ca.Function(
@@ -96,7 +110,6 @@ def main():
             [q_sym, v_sym, I_rotor_sym],
             [motor_pos_sym, motor_vel_sym, jac_flat, armature_flat],
         ).expand()
-
     else:
         nq = 13
         nv = 12
@@ -148,11 +161,6 @@ def main():
 
     output_dir = os.path.join(script_dir, "../generated_kernels")
 
-    # FK, Jac, Armature kernels are auxiliary, mostly just main kernel matters for simulation
-
-    # We still transpile them for testing purposes in this script (Jac/FK)
-    # But usually FK/Jac functions defined above (jac_func) depend on joint_pos_sym which is correct for both cases.
-
     fk_transpiler = CasadiToWarp(
         fk_func, function_name="fk_kernel", output_dir=output_dir
     )
@@ -171,7 +179,10 @@ def main():
     armature_kernel = armature_transpiler.load_kernel()
 
     state_armature_jac_transpiler = CasadiToWarp(
-        state_armature_jac_func, function_name=kernel_name, output_dir=output_dir
+        state_armature_jac_func,
+        function_name=kernel_name,
+        output_dir=output_dir,
+        safe_math=False,
     )
 
     state_armature_jac_kernel = state_armature_jac_transpiler.load_kernel()
@@ -185,17 +196,6 @@ def main():
     print(f"Input Dim: {in_dim}")
     print(f"FK Output Dim: {out_dim_fk}")
     print(f"Jac Output Dim (flattened): {out_dim_jac}")
-
-    joint_limits = np.array(
-        [
-            [-np.pi, np.pi],
-            [-np.pi, np.pi],
-            [0, 2.66],
-            [-1.3, 0.5],
-            [-0.3, 0.3],
-            [-1.1345, 0.1745],
-        ]
-    )
 
     x_np = np.random.uniform(
         joint_limits[:, 0], joint_limits[:, 1], (BATCH_SIZE, in_dim)
